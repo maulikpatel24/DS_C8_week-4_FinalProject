@@ -1,0 +1,369 @@
+---
+title: "DS_C8_Week-4_project"
+author: "Maulik Patel"
+date: "December 12, 2016"
+output: html_document
+---
+
+#**PROJECT: "Human Activity Recognition" Class Prediction (Classification)**
+
+##**Background**
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+
+##**Goal of the Project:**
+
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases. 
+
+
+##**Data:**
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment. 
+
+
+```{r setup, include=FALSE, echo=FALSE}
+## clear the workspace
+rm(list = ls())
+
+# turning "warnings" off
+options(warn=-1)
+
+suppressMessages(library(ggplot2))
+suppressMessages(library(lattice))
+suppressMessages(library(GGally))
+
+suppressMessages(library(plyr))
+suppressMessages(library(dplyr))
+suppressMessages(library(Hmisc))
+suppressMessages(library(reshape2))
+suppressMessages(library(tidyr))
+
+suppressMessages(library(statsr))
+suppressMessages(library(devtools))
+suppressMessages(library(shiny))
+suppressMessages(library(readr))
+suppressMessages(library(data.table))
+
+suppressMessages(library(caret))
+suppressMessages(library(e1071))
+
+default_par = par() # save default par
+```
+
+
+##**[1] Load the Data:**
+
+```{r load the data}
+
+setwd("C:\\") # start with setting the working directory in C:
+if(!file.exists("./c8_project")){dir.create("./c8_project")}
+setwd("C:\\c8_project") # SETTING THE WORKING DIRECTORY 
+
+url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(url, destfile = "./training.csv")
+
+url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(url, destfile = "./testing.csv")
+
+# Read the above files and create data tables.
+train.set = read.csv("training.csv")
+test.set = read.csv("testing.csv")
+```
+
+
+##**[2] Explore the Data:**
+
+```{r explore the data}
+
+dim(train.set)
+
+dim(test.set)
+
+table(colSums(is.na(train.set)))# how many 0 NAs and how many non-zero NAs and their count.
+
+table(colSums(is.na(test.set)))
+```
+
+
+##**[3] Pre-processing of the Data:**
+
+###***Removing NAs and unimportant predictors:***
+
+```{r no NAs}
+n = nrow(train.set)
+p = n * 0.8
+
+train.nona = train.set[,which(colSums(is.na(train.set)) < p)]
+table(colSums(is.na(train.nona)))
+
+test.nona = test.set[,which(colSums(is.na(train.set)) < p)]
+table(colSums(is.na(test.nona)))
+
+test.nona.2 = test.nona[,which(colSums(is.na(test.nona)) != 20)]
+table(colSums(is.na(test.nona.2)))
+
+train.nona.2 = train.nona[,which(colSums(is.na(test.nona)) != 20)]
+table(colSums(is.na(train.nona.2)))
+
+# removing variables not useful in classification of "classe":
+train.nona.2 = subset(train.nona.2, select=-c(1:6))
+test.nona.2 = subset(test.nona.2, select=-c(1:6))
+
+table(names(train.nona.2) == names(test.nona.2))
+```
+
+```{r matching columns}
+# which columns in train.set is not in test.set:
+table(names(train.nona.2) == names(test.nona.2))
+names(train.nona.2)[which(names(train.nona.2) != names(test.nona.2))]
+# "classe" column is in train.set but not in test.set. this makes sense as this is the column we will be trying to predict for test.set.
+
+# which column in test.set is not in train.set:
+table(names(test.nona.2) == names(train.nona.2))
+names(test.nona.2)[which(names(test.nona.2) != names(train.nona.2))]
+# "problem id" is the column in test.set not in train.set. we should remove this column.
+test = subset(test.nona.2, select=-c(problem_id))
+
+#write.csv(train.nona.2, "train.nona.2.csv")
+#write.csv(test.nona.2, "test.nona.2.csv")
+```
+
+
+##**[4] Creating Training and Validation-sets:**
+
+The idea here is to use 70% of the provided training-set for 10-fold cross-validation to estimate test-error (or accuracy) of the class prediction.
+
+
+And then use the remaining 30% of set as Validation set using the trained model to check validation-error (or accuracy) of the class prediction.
+
+
+by 10-fold CV we are trying to estimate test-error. while with validation-set we are trying to see how the selected model will performa on an unknown data set.
+
+
+
+```{r data partition}
+set.seed(1)
+
+index = createDataPartition(y=train.nona.2$classe, p=0.7, list=FALSE)
+
+train = train.nona.2[index,]
+validation = train.nona.2[-index,]
+
+dim(train)
+dim(validation)
+
+#write.csv(train, "train.csv")
+```
+
+
+##**[5] Modeling for Classification & Model Evaluation:**
+
+we will create multiple classification model. we will evaluate each model ased on their 10-fold cv test accruacy and validation-set accuracy.
+
+Then we will perform model selection based on best estimated test accuracy and validation set accuracy.
+
+The Models we will consider are:
+
+- Decision Tree
+- LDA (Linear Discriminant Analysis)
+- SVM (Support Vector Machines)
+- Bagging
+- Boosting
+- Random Forests
+
+
+###***[A] Model-1: Decision Tree***
+
+```{r MODELING_decision tree}
+
+set.seed(1)
+
+# MODELING:
+tree.model = train(classe ~ ., method="rpart", data=train,
+                   trControl = trainControl(method = "cv", number=10))
+tree.model
+
+# PREDICTION:
+tree.pred = predict(tree.model, validation)
+table(tree.pred, validation$classe)
+
+# VALIDATION-SET ACCURACY:
+tree.accuracy = mean(tree.pred == validation$classe)
+tree.accuracy
+```
+
+####** Decision-Tree Model Evaluation:**
+
+- estimated Test-Accuracy = 53% (using 10-fold CV)
+- Validation-Accuracy = 49.1% (using a validation-set)
+
+
+
+###***[B] Model-2: Linear Discriminant Analysis (LDA)***
+
+```{r MODELING_LDA}
+
+set.seed(1)
+
+# MODELING:
+lda.model = train(classe ~ ., method="lda", data=train,
+                   trControl = trainControl(method = "cv", number=10))
+lda.model
+
+# PREDICTION:
+lda.pred = predict(lda.model, validation)
+table(lda.pred, validation$classe)
+
+# VALIDATION-SET ACCURACY:
+lda.accuracy = mean(lda.pred == validation$classe)
+lda.accuracy
+```
+
+####** LDA Model Evaluation:**
+
+- estimated Test-Accuracy = 71.2% (using 10-fold CV)
+- Validation-Accuracy = 71% (using a validation-set)
+
+
+
+###***[C] Model-3: SVM - Support Vector Machines***
+
+```{r MODELING_SVM}
+
+set.seed(1)
+
+# MODELING:
+svm.model = svm(classe ~ ., data=train, cross=10)
+summary(svm.model)
+
+# PREDICTION:
+svm.pred = predict(svm.model, validation)
+table(svm.pred, validation$classe)
+
+# VALIDATION-SET ACCURACY:
+svm.accuracy = mean(svm.pred == validation$classe)
+svm.accuracy
+```
+
+####** "Support Vector Machines" Model Evaluation:**
+
+- estimated Test-Accuracy = 94.0% (using 10-fold CV)
+- Validation-Accuracy = 95.2% (using a validation-set)
+
+
+
+
+###***[D] Model-4: Bagging***
+
+```{r MODELING_Bagging}
+
+set.seed(1)
+
+# MODELING:
+bag.model = bag(train[,1:53], train[,54], B=10,
+                bagControl = bagControl(fit = ctreeBag$fit,
+                                      predict = ctreeBag$pred,
+                                      aggregate = ctreeBag$aggregate),
+              trControl = trainControl(method = "cv", number=10))
+summary(bag.model)
+
+# PREDICTION:
+bag.pred = predict(bag.model, validation)
+table(bag.pred, validation$classe)
+
+# VALIDATION-SET ACCURACY:
+bag.accuracy = mean(bag.pred == validation$classe)
+bag.accuracy
+```
+
+####** "Bagging" Model Evaluation:**
+
+- estimated Test-Accuracy = 89.1% (using 10-fold CV)
+- Validation-Accuracy = 96.5% (using a validation-set)
+
+
+
+
+###***[E] Model-5: Boosting***
+
+```{r MODELING_Boosting}
+
+set.seed(1)
+
+# MODELING:
+boost.model = train(classe ~., data=train, method = "gbm", 
+                    verbose = FALSE,
+                    trControl = trainControl(method = "cv", number=10))
+boost.model
+
+# PREDICTION:
+boost.pred = predict(boost.model, validation)
+table(boost.pred, validation$classe)
+
+# VALIDATION-SET ACCURACY:
+boost.accuracy = mean(boost.pred == validation$classe)
+boost.accuracy
+```
+
+####** "Bagging" Model Evaluation:**
+
+- estimated Test-Accuracy = 98.6% (using 10-fold CV)
+- Validation-Accuracy = 98.8% (using a validation-set)
+
+
+
+
+###***[F] Model-6: Random Forests***
+
+```{r MODELING_Random Forests}
+
+set.seed(1)
+
+# MODELING:
+rf.model = train(classe ~., data=train, method = "rf",
+                    trControl = trainControl(method = "cv", number=10))
+rf.model
+
+# PREDICTION:
+rf.pred = predict(rf.model, validation)
+table(rf.pred, validation$classe)
+
+# VALIDATION-SET ACCURACY:
+rf.accuracy = mean(rf.pred == validation$classe)
+rf.accuracy
+```
+
+####** "Random Forests" Model Evaluation:**
+
+- estimated Test-Accuracy = 99.8% (using 10-fold CV)
+- Validation-Accuracy = 99.92% (using a validation-set)
+
+
+
+##**[6] Model Selection:**
+
+Based on highest 10-fold cross-validation estimated Test-Accuracy of 99.8% and ValidationSet-Accuracy of 99.92%, I select **"Random Forest"** as the model of choice for classification task of this project.
+
+
+##**[7] Final Prediction of Test-set using "Random Forests":**
+
+```{r prediction on final test set}
+# final prediction on test set:
+test.pred = predict(rf.model, test)
+table(test.pred)
+
+# adding predcited class to test set as a column.
+test$classe = test.pred
+
+dim(test)
+test$classe
+```
+
+
+```{r RunAtTheEnd, message=FALSE, echo=FALSE, warning=FALSE}
+# turning "warnings" on
+options(warn=0)
+
+par(default_par)
+```
